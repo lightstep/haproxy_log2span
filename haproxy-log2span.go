@@ -5,8 +5,8 @@ import (
 	"os"
 	"regexp"
 
-	"code.hq.twilio.com/insight/haproxy-log2span/lib"
-	"code.hq.twilio.com/insight/haproxy-log2span/platform"
+	"github.com/lightstep/haproxy_log2span/lib"
+	"github.com/lightstep/haproxy_log2span/platform"
 	"github.com/stvp/rollbar"
 
 	"github.com/hpcloud/tail"

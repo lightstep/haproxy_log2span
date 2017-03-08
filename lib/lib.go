@@ -7,11 +7,10 @@ import (
 	"time"
 
 	"github.com/DataDog/datadog-go/statsd"
+	"github.com/lightstep/haproxy_log2span/network"
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/log"
 	"github.com/stvp/rollbar"
-
-	"code.hq.twilio.com/insight/haproxy-log2span/network"
 )
 
 // ProcessLine looks at a given line and creates a span with start and end times based on the durations and log timestamp.
