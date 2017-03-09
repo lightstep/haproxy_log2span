@@ -38,11 +38,11 @@ func main() {
 		panic(err)
 	}
 
-	// datadogClient, err := platform.SetupDatadog(applicationName, githash)
-	// if err != nil {
-	// 	rollbar.Error(rollbar.ERR, err)
-	// 	panic(err)
-	// }
+	datadogClient, err := platform.SetupDatadog(applicationName, githash)
+	if err != nil {
+		rollbar.Error(rollbar.ERR, err)
+		panic(err)
+	}
 
 	t, err := tail.TailFile(flagFilename,
 		tail.Config{Follow: true,
@@ -57,6 +57,9 @@ func main() {
 		err := lib.ProcessLine(line.Text, lib.DefaultHaproxyRegex)
 		if err != nil {
 			rollbar.Error(rollbar.ERR, err)
+			datadogClient.Count("log_not_matched", 1, nil, 1)
+		} else {
+			datadogClient.Count("log_matched", 1, nil, 1)
 		}
 	}
 }
