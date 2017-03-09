@@ -11,7 +11,6 @@ import (
 	ot_log "github.com/opentracing/opentracing-go/log"
 )
 
-var timeZeroValue time.Time
 var (
 	HAProxyTimestamp    = "02/Jan/2006:15:04:05.999"
 	DefaultHaproxyRegex = regexp.MustCompile(`^(?P<syslog_time>[^ ]* +[^ ]* +[^ ]*) (?P<syslog_host>[\w\-\.]+) (?P<ps>\w+)\[(?P<pid>\d+)\]: ((?P<c_ip>[\w\.]+):(?P<c_port>\d+) \[(?P<timestamp>.+)\] (?P<f_end>[\w\~\-]+) (?P<b_end>[\w\-]+)\/(?P<b_server>[\w\.\-]+) (?P<tq>\-?\d+)\/(?P<tw>\-?\d+)\/(?P<tc>\-?\d+)\/(?P<tr>\-?\d+)\/\+?(?P<tt>\d+) (?P<status_code>\d+) \+?(?P<bytes>\d+) (?P<req_cookie>\S?) (?P<res_cookie>\S?) (?P<t_state>[\w\-]+) (?P<actconn>\d+)\/(?P<feconn>\d+)\/(?P<beconn>\d+)\/(?P<srv_conn>\d+)\/\+?(?P<retries>\d+) (?P<srv_queue>\d+)\/(?P<backend_queue>\d+) (\{(?P<req_headers>[^}]*)\} )?(\{?(?P<res_headers>[^}]*)\}? )?"(?P<request>[^"]*)"?)`)
@@ -23,18 +22,18 @@ var (
 type HAProxyHTTPLog struct {
 	Request string
 	Retries int
-	// ReqHeaders contain any captured cookie headers.
-	ReqHeaders string
+	// CapturedRequestHeaders contain any captured cookie headers.
+	CapturedRequestHeaders string
 	// StartTime is the exact time when the TCP connection was received by HAProxy
 	StartTime time.Time
 	// StatusCode is the HTTP status code returned to the client.
 	StatusCode int
-	// Frontend is the name of the frontend that received and processed the
+	// FrontendName is the name of the frontend that received and processed the
 	// request.
-	Frontend string
-	// Backend is the name of the back that was selected to managed the connection
+	FrontendName string
+	// BackendName is the name of the back that was selected to managed the connection
 	// to the server.
-	Backend string
+	BackendName string
 	// BackendServer is the name of the last server to which the connection
 	// was sent.
 	BackendServer string
@@ -94,11 +93,11 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 		case "request":
 			logInfo.Request = val
 		case "f_end":
-			logInfo.Frontend = val
+			logInfo.FrontendName = val
 		case "b_end":
-			logInfo.Backend = val
+			logInfo.BackendName = val
 		case "b_server":
-			logInfo.Backend = val
+			logInfo.BackendName = val
 		case "bytes":
 			if bytes, err := strconv.Atoi(val); err != nil {
 				errors = append(errors, err)
@@ -149,7 +148,7 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 				logInfo.StartTime = startTime.Add(time.Duration(8) * time.Hour)
 			}
 		case "req_headers":
-			logInfo.ReqHeaders = val
+			logInfo.CapturedRequestHeaders = val
 		case "tc":
 			if tc, err := strconv.Atoi(val); err != nil {
 				errors = append(errors, fmt.Errorf("Invalid timestamp %v (%v)", val, err))
@@ -175,7 +174,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 		clientError     bool
 		connectionError bool
 	)
-	if log.StartTime == timeZeroValue {
+	if log.StartTime.IsZero() {
 		return fmt.Errorf("Log does not contain a time value")
 	}
 
@@ -202,7 +201,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 	endTime := log.StartTime.Add(time.Duration(log.Tt) * time.Millisecond)
 
 	topSpan := opentracing.StartSpan(
-		"haproxy_request:"+log.Backend,
+		"haproxy_request:"+log.BackendName,
 		opentracing.StartTime(log.StartTime))
 
 	statusClass := parseStatusClass(log.StatusCode)
@@ -210,8 +209,8 @@ func createSpans(log *HAProxyHTTPLog) error {
 	topSpan.SetTag("http.status_class", statusClass)
 	// This needs to be filtered before it can be included.
 	// topSpan.SetTag("request", log.request)
-	topSpan.SetTag("f_end", log.Frontend)
-	topSpan.SetTag("b_end", log.Backend)
+	topSpan.SetTag("f_end", log.FrontendName)
+	topSpan.SetTag("b_end", log.BackendName)
 	topSpan.SetTag("peer.ipv4", log.BackendServer)
 	topSpan.SetTag("peer.zone", network.GetZone(log.BackendServer))
 	topSpan.SetTag("bytes", log.BytesRead)
@@ -219,7 +218,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 	topSpan.SetTag("backend_queue", log.BackendQueue)
 
 	// TODO: provide a callback that allows you to set certain tags like this
-	topSpan.SetTag("guid:request_sid", log.ReqHeaders)
+	topSpan.SetTag("guid:request_sid", log.CapturedRequestHeaders)
 	topSpan.SetTag("retries", log.Retries)
 
 	if log.StatusCode >= 500 {
@@ -238,7 +237,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 		clientTimeStart := log.StartTime
 		clientTimeEnd := clientTimeStart.Add(time.Duration(log.Tq) * time.Millisecond)
 		clientSpan := opentracing.StartSpan(
-			"client_read:"+log.Backend,
+			"client_read:"+log.BackendName,
 			opentracing.StartTime(clientTimeStart),
 			opentracing.ChildOf(topSpan.Context()))
 
@@ -246,14 +245,14 @@ func createSpans(log *HAProxyHTTPLog) error {
 			queueTimeStart := clientTimeEnd
 			queueTimeEnd := queueTimeStart.Add(time.Duration(log.Tw) * time.Millisecond)
 			queueSpan := opentracing.StartSpan(
-				"queue_wait:"+log.Backend,
+				"queue_wait:"+log.BackendName,
 				opentracing.StartTime(queueTimeStart),
 				opentracing.FollowsFrom(clientSpan.Context()))
 			if connectionError != true {
 				connectionTimeStart := queueTimeEnd
 				connectionTimeEnd := connectionTimeStart.Add(time.Duration(log.Tc) * time.Millisecond)
 				connectionSpan := opentracing.StartSpan(
-					"connection:"+log.Backend,
+					"connection:"+log.BackendName,
 					opentracing.StartTime(connectionTimeStart),
 					opentracing.FollowsFrom(queueSpan.Context()))
 				if serverError != true {
@@ -261,7 +260,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 					headerTime := responseTimeStart.Add(time.Duration(log.TR) * time.Millisecond)
 					responseTimeEnd := endTime
 					serverSpan := opentracing.StartSpan(
-						"response:"+log.Backend,
+						"response:"+log.BackendName,
 						opentracing.StartTime(responseTimeStart),
 						opentracing.FollowsFrom(connectionSpan.Context()))
 					serverSpan.FinishWithOptions(
