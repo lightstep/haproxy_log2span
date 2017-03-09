@@ -22,12 +22,16 @@ var (
 // A more in detail description of the fields can be found here:
 // https://github.com/haproxy/haproxy/blob/master/doc/configuration.txt#L14991
 type HAProxyHTTPLog struct {
-	Request string
-	Retries int
-	// CapturedRequestHeaders contain any captured cookie headers.
-	CapturedRequestHeaders string
+	Request     string
+	ProcessName string
+	PID         int
+	// Client IP is the IP address of the client which initiated the TCP
+	// connection to haproxy.
+	ClientIP   string
+	ClientPort string
 	// StartTime is the exact time when the TCP connection was received by HAProxy
 	StartTime time.Time
+	Retries   int
 	// StatusCode is the HTTP status code returned to the client.
 	StatusCode uint16
 	// FrontendName is the name of the frontend that received and processed the
@@ -36,15 +40,9 @@ type HAProxyHTTPLog struct {
 	// BackendName is the name of the back that was selected to managed the connection
 	// to the server.
 	BackendName string
-	// BackendServer is the name of the last server to which the connection
+	// ServerName is the name of the last server to which the connection
 	// was sent.
-	BackendServer string
-	// BackendQueue is the total number of requests which were processed before
-	// this one in the backend's global queue.
-	BackendQueue int
-	// SrvQueue is the total number of requests which were processed before
-	// this one in the server queue.
-	SrvQueue int
+	ServerName string
 	// BytesRead is the total number of bytes transmitted to the client.
 	BytesRead int
 	// TR is the total time in milliseconds spent waiting for a full HTTP request
@@ -61,10 +59,35 @@ type HAProxyHTTPLog struct {
 	// Tq is the total time in milliseconds waiting for the client to send a full
 	// HTTP request, not counting data.
 	Tq int
+	// TerminationState is the condition the session was in when the session ended
+	TerminationState       string
+	CapturedRequestCookie  string
+	CapturedResponseCookie string
+	// Actconn is the number of concurrent connections on the process at the time
+	// the session was logged.
+	Actconn int
+	// Feconn is the number of concurrent connections on the front end when the
+	// session was logged.
+	Feconn int
+	// Beconn is the nuber of concurrent connections handled by the backend when
+	// the session was logged.
+	Beconn int
+	// Srv is the number of concurrent connections still active on the server
+	// when the session was logged.
+	Srvconn int
+	// SrvQueue is the total number of requests which were processed before
+	// this one in the server queue.
+	SrvQueue int
+	// BackendQueue is the total number of requests which were processed before
+	// this one in the backend's global queue.
+	BackendQueue            int
+	CapturedRequestHeaders  string
+	CapturedResponseHeaders string
 }
 
-// ProcessLine looks at a given line and creates a span with start and end times based on the durations and log timestamp.
-// It returns an err if there was an issue parsing or creating the span.
+// ProcessLine looks at a given line and creates a span with start and end
+// times based on the durations and log timestamp.
+// It returns an error if there was an issue parsing or creating the span.
 func ProcessLine(line string) error {
 	match := defaultHaproxyRegex.FindStringSubmatch(line)
 	if match == nil {
@@ -86,6 +109,18 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 	logInfo := &HAProxyHTTPLog{}
 	for name, val := range matches {
 		switch name {
+		case "ps":
+			logInfo.ProcessName = val
+		case "pid":
+			if pid, err := strconv.Atoi(val); err != nil {
+				errors = append(errors, err)
+			} else {
+				logInfo.PID = pid
+			}
+		case "c_ip":
+			logInfo.ClientIP = val
+		case "c_port":
+			logInfo.ClientPort = val
 		case "status_code":
 			if statusCode, err := strconv.Atoi(val); err != nil {
 				errors = append(errors, err)
@@ -142,6 +177,32 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 			} else {
 				logInfo.Tq = tq
 			}
+		case "t_state":
+			logInfo.TerminationState = val
+		case "actconn":
+			if actconn, err := strconv.Atoi(val); err != nil {
+				errors = append(errors, err)
+			} else {
+				logInfo.Actconn = actconn
+			}
+		case "beconn":
+			if beconn, err := strconv.Atoi(val); err != nil {
+				errors = append(errors, err)
+			} else {
+				logInfo.Beconn = beconn
+			}
+		case "feconn":
+			if feconn, err := strconv.Atoi(val); err != nil {
+				errors = append(errors, err)
+			} else {
+				logInfo.Feconn = feconn
+			}
+		case "srv_conn":
+			if srvconn, err := strconv.Atoi(val); err != nil {
+				errors = append(errors, err)
+			} else {
+				logInfo.Srvconn = srvconn
+			}
 		case "timestamp":
 			if startTime, err := time.Parse(HAProxyTimestamp, val); err != nil {
 				errors = append(errors, fmt.Errorf("Invalid timestamp %v (%v)", val, err))
@@ -151,6 +212,12 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 			}
 		case "req_headers":
 			logInfo.CapturedRequestHeaders = val
+		case "res_headers":
+			logInfo.CapturedResponseHeaders = val
+		case "req_cookie":
+			logInfo.CapturedRequestCookie = val
+		case "res_cookie":
+			logInfo.CapturedResponseCookie = val
 		case "tc":
 			if tc, err := strconv.Atoi(val); err != nil {
 				errors = append(errors, fmt.Errorf("Invalid timestamp %v (%v)", val, err))
@@ -178,8 +245,8 @@ func addTagsToSpan(sp opentracing.Span, log HAProxyHTTPLog) error {
 	}
 	ext.HTTPStatusCode.Set(sp, log.StatusCode)
 	sp.SetTag("http.status_class", statusClass)
-	sp.SetTag("peer.zone", network.GetZone(log.BackendServer))
-	sp.SetTag("peer.ipv4", log.BackendServer)
+	sp.SetTag("peer.zone", network.GetZone(log.ServerName))
+	sp.SetTag("peer.ipv4", log.ServerName)
 	sp.SetTag("retries", log.Retries)
 	sp.SetTag("f_end", log.FrontendName)
 	sp.SetTag("b_end", log.BackendName)
