@@ -4,16 +4,18 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lightstep/haproxy_log2span/network"
 	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/ext"
 	ot_log "github.com/opentracing/opentracing-go/log"
 )
 
 var (
 	HAProxyTimestamp    = "02/Jan/2006:15:04:05.999"
-	DefaultHaproxyRegex = regexp.MustCompile(`^(?P<syslog_time>[^ ]* +[^ ]* +[^ ]*) (?P<syslog_host>[\w\-\.]+) (?P<ps>\w+)\[(?P<pid>\d+)\]: ((?P<c_ip>[\w\.]+):(?P<c_port>\d+) \[(?P<timestamp>.+)\] (?P<f_end>[\w\~\-]+) (?P<b_end>[\w\-]+)\/(?P<b_server>[\w\.\-]+) (?P<tq>\-?\d+)\/(?P<tw>\-?\d+)\/(?P<tc>\-?\d+)\/(?P<tr>\-?\d+)\/\+?(?P<tt>\d+) (?P<status_code>\d+) \+?(?P<bytes>\d+) (?P<req_cookie>\S?) (?P<res_cookie>\S?) (?P<t_state>[\w\-]+) (?P<actconn>\d+)\/(?P<feconn>\d+)\/(?P<beconn>\d+)\/(?P<srv_conn>\d+)\/\+?(?P<retries>\d+) (?P<srv_queue>\d+)\/(?P<backend_queue>\d+) (\{(?P<req_headers>[^}]*)\} )?(\{?(?P<res_headers>[^}]*)\}? )?"(?P<request>[^"]*)"?)`)
+	defaultHaproxyRegex = regexp.MustCompile(`^(?P<syslog_time>[^ ]* +[^ ]* +[^ ]*) (?P<syslog_host>[\w\-\.]+) (?P<ps>\w+)\[(?P<pid>\d+)\]: ((?P<c_ip>[\w\.]+):(?P<c_port>\d+) \[(?P<timestamp>.+)\] (?P<f_end>[\w\~\-]+) (?P<b_end>[\w\-]+)\/(?P<b_server>[\w\.\-]+) (?P<tq>\-?\d+)\/(?P<tw>\-?\d+)\/(?P<tc>\-?\d+)\/(?P<tr>\-?\d+)\/\+?(?P<tt>\d+) (?P<status_code>\d+) \+?(?P<bytes>\d+) (?P<req_cookie>\S?) (?P<res_cookie>\S?) (?P<t_state>[\w\-]+) (?P<actconn>\d+)\/(?P<feconn>\d+)\/(?P<beconn>\d+)\/(?P<srv_conn>\d+)\/\+?(?P<retries>\d+) (?P<srv_queue>\d+)\/(?P<backend_queue>\d+) (\{(?P<req_headers>[^}]*)\} )?(\{?(?P<res_headers>[^}]*)\}? )?"(?P<request>[^"]*)"?)`)
 )
 
 // HAProxyHTTPLog represents a parsed HAProxy log line.
@@ -27,7 +29,7 @@ type HAProxyHTTPLog struct {
 	// StartTime is the exact time when the TCP connection was received by HAProxy
 	StartTime time.Time
 	// StatusCode is the HTTP status code returned to the client.
-	StatusCode int
+	StatusCode uint16
 	// FrontendName is the name of the frontend that received and processed the
 	// request.
 	FrontendName string
@@ -63,13 +65,13 @@ type HAProxyHTTPLog struct {
 
 // ProcessLine looks at a given line and creates a span with start and end times based on the durations and log timestamp.
 // It returns an err if there was an issue parsing or creating the span.
-func ProcessLine(line string, matchRegex *regexp.Regexp) error {
-	match := matchRegex.FindStringSubmatch(line)
+func ProcessLine(line string) error {
+	match := defaultHaproxyRegex.FindStringSubmatch(line)
 	if match == nil {
 		return fmt.Errorf("Could not match line with regex")
 	}
-	matches := make(map[string]string, matchRegex.NumSubexp())
-	for i, name := range matchRegex.SubexpNames() {
+	matches := make(map[string]string, defaultHaproxyRegex.NumSubexp())
+	for i, name := range defaultHaproxyRegex.SubexpNames() {
 		matches[name] = match[i]
 	}
 	logInfo, errs := newHaproxyLogFromMap(matches)
@@ -88,7 +90,7 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 			if statusCode, err := strconv.Atoi(val); err != nil {
 				errors = append(errors, err)
 			} else {
-				logInfo.StatusCode = statusCode
+				logInfo.StatusCode = uint16(statusCode)
 			}
 		case "request":
 			logInfo.Request = val
@@ -166,6 +168,31 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 	return logInfo, errors
 }
 
+func addTagsToSpan(sp opentracing.Span, log HAProxyHTTPLog) error {
+	statusClass := parseStatusClass(log.StatusCode)
+	if !strings.HasPrefix(log.CapturedRequestHeaders, "RQ") {
+		return fmt.Errorf("No SID provided")
+	}
+	if log.StatusCode >= 500 {
+		ext.Error.Set(sp, true)
+	}
+	ext.HTTPStatusCode.Set(sp, log.StatusCode)
+	sp.SetTag("http.status_class", statusClass)
+	sp.SetTag("peer.zone", network.GetZone(log.BackendServer))
+	sp.SetTag("peer.ipv4", log.BackendServer)
+	sp.SetTag("retries", log.Retries)
+	sp.SetTag("f_end", log.FrontendName)
+	sp.SetTag("b_end", log.BackendName)
+	sp.SetTag("bytes", log.BytesRead)
+	sp.SetTag("srv_queue", log.SrvQueue)
+	sp.SetTag("backend_queue", log.BackendQueue)
+	// This needs to be filtered before it can be included.
+	// topSpan.SetTag("request", log.request)
+	// TODO: provide a callback that allows you to set certain tags like this
+	sp.SetTag("guid:request_sid", log.CapturedRequestHeaders)
+	return nil
+}
+
 func createSpans(log *HAProxyHTTPLog) error {
 	var (
 		requestError    bool
@@ -203,27 +230,6 @@ func createSpans(log *HAProxyHTTPLog) error {
 	topSpan := opentracing.StartSpan(
 		"haproxy_request:"+log.BackendName,
 		opentracing.StartTime(log.StartTime))
-
-	statusClass := parseStatusClass(log.StatusCode)
-	topSpan.SetTag("http.status_code", log.StatusCode)
-	topSpan.SetTag("http.status_class", statusClass)
-	// This needs to be filtered before it can be included.
-	// topSpan.SetTag("request", log.request)
-	topSpan.SetTag("f_end", log.FrontendName)
-	topSpan.SetTag("b_end", log.BackendName)
-	topSpan.SetTag("peer.ipv4", log.BackendServer)
-	topSpan.SetTag("peer.zone", network.GetZone(log.BackendServer))
-	topSpan.SetTag("bytes", log.BytesRead)
-	topSpan.SetTag("srv_queue", log.SrvQueue)
-	topSpan.SetTag("backend_queue", log.BackendQueue)
-
-	// TODO: provide a callback that allows you to set certain tags like this
-	topSpan.SetTag("guid:request_sid", log.CapturedRequestHeaders)
-	topSpan.SetTag("retries", log.Retries)
-
-	if log.StatusCode >= 500 {
-		topSpan.SetTag("error", "true")
-	}
 
 	if requestError == true {
 		topSpan.SetTag("requestError", requestError)
@@ -284,7 +290,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 
 // parseStatusCode takes an HTTP response code, parses it to an int, and returns
 // the code class it's in, e.g. 404 is a 4xx code.
-func parseStatusClass(code int) (class string) {
+func parseStatusClass(code uint16) (class string) {
 	if code >= 100 && code < 200 {
 		class = "1xx"
 	} else if code < 300 {

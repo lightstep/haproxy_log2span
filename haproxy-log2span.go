@@ -54,7 +54,7 @@ func main() {
 		panic(fmt.Sprintf("Unable to open file: %v\n", err))
 	}
 	for line := range t.Lines {
-		err := lib.ProcessLine(line.Text, lib.DefaultHaproxyRegex)
+		err := lib.ProcessLine(line.Text)
 		if err != nil {
 			rollbar.Error(rollbar.ERR, err)
 			datadogClient.Count("log_not_matched", 1, nil, 1)
