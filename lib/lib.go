@@ -45,9 +45,9 @@ type HAProxyHTTPLog struct {
 	ServerName string
 	// BytesRead is the total number of bytes transmitted to the client.
 	BytesRead int
-	// TR is the total time in milliseconds spent waiting for a full HTTP request
+	// Tr is the total time in milliseconds spent waiting for a full HTTP request
 	// from the client (not counting body) after the first byte was received.
-	TR int
+	Tr int
 	// Tw is the total time in milliseconds waiting in various queues.
 	Tw int
 	// Tc is the total time in milliseconds waiting for the server to send a full
@@ -169,7 +169,7 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 			if tr, err := strconv.Atoi(val); err != nil {
 				errors = append(errors, err)
 			} else {
-				logInfo.TR = tr
+				logInfo.Tr = tr
 			}
 		case "tq":
 			if tq, err := strconv.Atoi(val); err != nil {
@@ -277,7 +277,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 		requestError = true
 	}
 
-	if log.TR == -1 {
+	if log.Tr == -1 {
 		serverError = true
 		requestError = true
 	}
@@ -330,7 +330,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 					opentracing.FollowsFrom(queueSpan.Context()))
 				if serverError != true {
 					responseTimeStart := connectionTimeEnd
-					headerTime := responseTimeStart.Add(time.Duration(log.TR) * time.Millisecond)
+					headerTime := responseTimeStart.Add(time.Duration(log.Tr) * time.Millisecond)
 					responseTimeEnd := endTime
 					serverSpan := opentracing.StartSpan(
 						"response:"+log.BackendName,
@@ -343,7 +343,7 @@ func createSpans(log *HAProxyHTTPLog) error {
 								opentracing.LogRecord{
 									Timestamp: headerTime,
 									Fields: []ot_log.Field{
-										ot_log.Int("header_millis", log.TR)}}}})
+										ot_log.Int("header_millis", log.Tr)}}}})
 				}
 				connectionSpan.FinishWithOptions(opentracing.FinishOptions{FinishTime: connectionTimeEnd})
 			}
