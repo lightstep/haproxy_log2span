@@ -235,7 +235,7 @@ func newHaproxyLogFromMap(matches map[string]string) (*HAProxyHTTPLog, []error) 
 	return logInfo, errors
 }
 
-func addTagsToSpan(sp opentracing.Span, log HAProxyHTTPLog) error {
+func addTagsToSpan(sp opentracing.Span, log *HAProxyHTTPLog) error {
 	statusClass := parseStatusClass(log.StatusCode)
 	if !strings.HasPrefix(log.CapturedRequestHeaders, "RQ") {
 		return fmt.Errorf("No SID provided")
@@ -297,6 +297,9 @@ func createSpans(log *HAProxyHTTPLog) error {
 	topSpan := opentracing.StartSpan(
 		"haproxy_request:"+log.BackendName,
 		opentracing.StartTime(log.StartTime))
+	if err := addTagsToSpan(topSpan, log); err != nil {
+		return err
+	}
 
 	if requestError == true {
 		topSpan.SetTag("requestError", requestError)
