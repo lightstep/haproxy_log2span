@@ -7,9 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lightstep/haproxy_log2span/network"
 	"github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/ext"
 	ot_log "github.com/opentracing/opentracing-go/log"
 )
 
@@ -100,7 +98,7 @@ type HAProxyHTTPLog struct {
 // ProcessLine looks at a given line and creates a span with start and end
 // times based on the durations and log timestamp.
 // It returns an error if there was an issue parsing or creating the span.
-func ProcessLine(line string) error {
+func (p Processor) ProcessLine(line string) error {
 	matches, err := findMatches(line)
 	if err != nil {
 		return err
@@ -109,7 +107,7 @@ func ProcessLine(line string) error {
 	if err != nil {
 		return err
 	}
-	return createSpans(logInfo)
+	return p.createSpans(logInfo)
 }
 
 func findMatches(line string) (map[string]string, error) {
@@ -255,32 +253,7 @@ func newHaproxyLogFromMap(matches map[string]string) (HAProxyHTTPLog, error) {
 	return logInfo, errors
 }
 
-func addTagsToSpan(sp opentracing.Span, log HAProxyHTTPLog) error {
-	statusClass := ParseStatusClass(log.StatusCode)
-	if !strings.HasPrefix(log.CapturedRequestHeaders, "RQ") {
-		return fmt.Errorf("No SID provided")
-	}
-	if log.StatusCode >= 500 {
-		ext.Error.Set(sp, true)
-	}
-	ext.HTTPStatusCode.Set(sp, log.StatusCode)
-	sp.SetTag("http.status_class", statusClass)
-	sp.SetTag("peer.zone", network.GetZone(log.ServerName))
-	sp.SetTag("peer.ipv4", log.ServerName)
-	sp.SetTag("retries", log.Retries)
-	sp.SetTag("f_end", log.FrontendName)
-	sp.SetTag("b_end", log.BackendName)
-	sp.SetTag("bytes", log.BytesRead)
-	sp.SetTag("srv_queue", log.SrvQueue)
-	sp.SetTag("backend_queue", log.BackendQueue)
-	// This needs to be filtered before it can be included.
-	// topSpan.SetTag("request", log.request)
-	// TODO: provide a callback that allows you to set certain tags like this
-	sp.SetTag("guid:request_sid", log.CapturedRequestHeaders)
-	return nil
-}
-
-func createSpans(log HAProxyHTTPLog) error {
+func (p Processor) createSpans(log HAProxyHTTPLog) error {
 	var (
 		requestError    bool
 		queueError      bool
@@ -314,11 +287,11 @@ func createSpans(log HAProxyHTTPLog) error {
 
 	endTime := log.StartTime.Add(time.Duration(log.Tt) * time.Millisecond)
 
-	topSpan := opentracing.StartSpan(
+	topSpan := p.tracer.StartSpan(
 		"haproxy_request:"+log.BackendName,
 		opentracing.StartTime(log.StartTime))
 
-	if err := addTagsToSpan(topSpan, log); err != nil {
+	if err := p.parentSpanCallback(topSpan, log); err != nil {
 		return err
 	}
 
@@ -333,22 +306,21 @@ func createSpans(log HAProxyHTTPLog) error {
 	if clientError != true {
 		clientTimeStart := log.StartTime
 		clientTimeEnd := clientTimeStart.Add(time.Duration(log.Tq) * time.Millisecond)
-		clientSpan := opentracing.StartSpan(
+		clientSpan := p.tracer.StartSpan(
 			"client_read:"+log.BackendName,
 			opentracing.StartTime(clientTimeStart),
 			opentracing.ChildOf(topSpan.Context()))
-
 		if queueError != true {
 			queueTimeStart := clientTimeEnd
 			queueTimeEnd := queueTimeStart.Add(time.Duration(log.Tw) * time.Millisecond)
-			queueSpan := opentracing.StartSpan(
+			queueSpan := p.tracer.StartSpan(
 				"queue_wait:"+log.BackendName,
 				opentracing.StartTime(queueTimeStart),
 				opentracing.FollowsFrom(clientSpan.Context()))
 			if connectionError != true {
 				connectionTimeStart := queueTimeEnd
 				connectionTimeEnd := connectionTimeStart.Add(time.Duration(log.Tc) * time.Millisecond)
-				connectionSpan := opentracing.StartSpan(
+				connectionSpan := p.tracer.StartSpan(
 					"connection:"+log.BackendName,
 					opentracing.StartTime(connectionTimeStart),
 					opentracing.FollowsFrom(queueSpan.Context()))
@@ -356,7 +328,7 @@ func createSpans(log HAProxyHTTPLog) error {
 					responseTimeStart := connectionTimeEnd
 					headerTime := responseTimeStart.Add(time.Duration(log.Tr) * time.Millisecond)
 					responseTimeEnd := endTime
-					serverSpan := opentracing.StartSpan(
+					serverSpan := p.tracer.StartSpan(
 						"response:"+log.BackendName,
 						opentracing.StartTime(responseTimeStart),
 						opentracing.FollowsFrom(connectionSpan.Context()))
