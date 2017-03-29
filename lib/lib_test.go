@@ -14,6 +14,7 @@ func TestInvalidLogLine(t *testing.T) {
 }
 
 func TestHAProxyLogFromMap(t *testing.T) {
+	p := NewProcessor()
 	line := `Jan 1 15:39:43 localhost haproxy[9000]: 127.0.0.1:59060 [01/Jan/2017:15:39:43.494] test-frontend test-backends/127.0.0.2 0/0/1/3/4 200 1910 - - ---- 10/0/0/0/0 1/2 {RQ123} "POST /v1/test_route HTTP/1.1"`
 	matches, err := findMatches(line)
 	if err != nil {
@@ -22,7 +23,7 @@ func TestHAProxyLogFromMap(t *testing.T) {
 	if len(matches) < 1 {
 		t.Fatalf("Got 0 matches")
 	}
-	log, errs := newHaproxyLogFromMap(matches)
+	log, errs := p.newHaproxyLogFromMap(matches)
 	if err != nil {
 		t.Fatalf("%v %v", log, errs)
 	}

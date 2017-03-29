@@ -2,6 +2,7 @@ package lib
 
 import (
 	"net"
+	"time"
 
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
@@ -14,16 +15,19 @@ type SpanCallback func(sp opentracing.Span, log HAProxyHTTPLog) error
 
 type ProcessorOption func(*Processor)
 
-type Processor struct {
-	tracer             opentracing.Tracer
-	parentSpanCallback SpanCallback
-}
-
 // WithParentSpanCallback returns a ProcessorOption that specifies a SpanCallback
-// to be applied to the parent span of the log.
+// to be applied to the parent span of the log. Defaults to DefaultProcessorCB.
 func WithParentSpanCallback(cb SpanCallback) ProcessorOption {
 	return func(p *Processor) {
 		p.parentSpanCallback = cb
+	}
+}
+
+// WithTimezoneCorrection specifies the amount of time to add to the parsed
+// timestamp.
+func WithTimezoneCorrection(correction time.Duration) ProcessorOption {
+	return func(p *Processor) {
+		p.timezoneCorrection = correction
 	}
 }
 
@@ -35,23 +39,29 @@ func WithTracer(tracer opentracing.Tracer) ProcessorOption {
 	}
 }
 
-func NewProcessor(opts ...func(*Processor)) Processor {
-	var processor Processor
-	for _, opt := range opts {
-		opt(&processor)
-	}
-
-	if processor.tracer == nil {
-		processor.tracer = opentracing.GlobalTracer()
-	}
-	if processor.parentSpanCallback == nil {
-		processor.parentSpanCallback = DefaultProcessorCB
-	}
-
-	return processor
+type Processor struct {
+	tracer             opentracing.Tracer
+	parentSpanCallback SpanCallback
+	timezoneCorrection time.Duration
 }
 
-func DefaultProcessorCB(sp opentracing.Span, log HAProxyHTTPLog) error {
+func NewProcessor(opts ...func(*Processor)) Processor {
+	var p Processor
+	for _, opt := range opts {
+		opt(&p)
+	}
+
+	if p.tracer == nil {
+		p.tracer = opentracing.GlobalTracer()
+	}
+	if p.parentSpanCallback == nil {
+		p.parentSpanCallback = DefaultParentSpanCB
+	}
+
+	return p
+}
+
+func DefaultParentSpanCB(sp opentracing.Span, log HAProxyHTTPLog) error {
 	if ip := net.ParseIP(log.ServerName); ip != nil {
 		if ip.To4() != nil {
 			sp.SetTag("peer.ipv4", log.ServerName)

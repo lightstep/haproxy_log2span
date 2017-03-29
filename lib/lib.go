@@ -95,15 +95,15 @@ type HAProxyHTTPLog struct {
 	CapturedResponseHeaders string
 }
 
-// ProcessLine looks at a given line and creates a span with start and end
+// Process looks at a given line and creates a span with start and end
 // times based on the durations and log timestamp.
 // It returns an error if there was an issue parsing or creating the span.
-func (p Processor) ProcessLine(line string) error {
+func (p Processor) Process(line string) error {
 	matches, err := findMatches(line)
 	if err != nil {
 		return err
 	}
-	logInfo, err := newHaproxyLogFromMap(matches)
+	logInfo, err := p.newHaproxyLogFromMap(matches)
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func findMatches(line string) (map[string]string, error) {
 	return matches, nil
 }
 
-func newHaproxyLogFromMap(matches map[string]string) (HAProxyHTTPLog, error) {
+func (p *Processor) newHaproxyLogFromMap(matches map[string]string) (HAProxyHTTPLog, error) {
 	var errors multiError
 	logInfo := HAProxyHTTPLog{}
 	for name, val := range matches {
@@ -225,8 +225,7 @@ func newHaproxyLogFromMap(matches map[string]string) (HAProxyHTTPLog, error) {
 			if startTime, err := time.Parse(HAProxyTimestamp, val); err != nil {
 				errors = append(errors, fmt.Errorf("Invalid timestamp %v (%v)", val, err))
 			} else {
-				// TODO: Remove hardcoded timezone correction
-				logInfo.StartTime = startTime.Add(time.Duration(8) * time.Hour)
+				logInfo.StartTime = startTime.Add(p.timezoneCorrection)
 			}
 		case "req_headers":
 			logInfo.CapturedRequestHeaders = val
