@@ -39,10 +39,20 @@ func WithTracer(tracer opentracing.Tracer) ProcessorOption {
 	}
 }
 
+// WithSpanContextInterceptor returns a ProcessorOption that specifies a function
+// which returns an opentracing.SpanContext from the parsed log info. The
+// returned SpanContext is used to create a ChildOf reference if valid.
+func WithSpanContextExtractor(extractor func(log HAProxyHTTPLog) opentracing.SpanContext) ProcessorOption {
+	return func(p *Processor) {
+		p.scExtractor = extractor
+	}
+}
+
 type Processor struct {
 	tracer             opentracing.Tracer
 	parentSpanCallback SpanCallback
 	timezoneCorrection time.Duration
+	scExtractor        func(HAProxyHTTPLog) opentracing.SpanContext
 }
 
 func NewProcessor(opts ...func(*Processor)) Processor {

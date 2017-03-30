@@ -285,10 +285,13 @@ func (p Processor) createSpans(log HAProxyHTTPLog) error {
 	}
 
 	endTime := log.StartTime.Add(time.Duration(log.Tt) * time.Millisecond)
-
+	startOpts := []opentracing.StartSpanOption{opentracing.StartTime(log.StartTime)}
+	if p.scExtractor != nil {
+		startOpts = append(startOpts, opentracing.ChildOf(p.scExtractor(log)))
+	}
 	topSpan := p.tracer.StartSpan(
 		"haproxy_request:"+log.BackendName,
-		opentracing.StartTime(log.StartTime))
+		startOpts...)
 
 	if err := p.parentSpanCallback(topSpan, log); err != nil {
 		return err
