@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/lightstep/haproxy_log2span/lib"
 	lightstep "github.com/lightstep/lightstep-tracer-go"
@@ -49,7 +48,7 @@ func main() {
 
 	haproxyProcessor := lib.NewProcessor(
 		lib.WithParentSpanCallback(parentSpanCB),
-		lib.WithTimezoneCorrection(8*time.Hour),
+		lib.WithTimezoneCorrection(),
 	)
 
 	t, err := tail.TailFile(flagFilename,

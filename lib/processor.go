@@ -25,9 +25,16 @@ func WithParentSpanCallback(cb SpanCallback) ProcessorOption {
 
 // WithTimezoneCorrection specifies the amount of time to add to the parsed
 // timestamp.
-func WithTimezoneCorrection(correction time.Duration) ProcessorOption {
+func WithTimezoneCorrection() ProcessorOption {
 	return func(p *Processor) {
-		p.timezoneCorrection = correction
+		ticker := time.NewTicker(time.Millisecond * 1000)
+		go func() {
+			for t := range ticker.C {
+				_, rawOffset := t.Zone()
+				// Need to reverse the offset to get back to UTC
+				p.timezoneCorrection = time.Duration(-rawOffset) * time.Second
+			}
+		}()
 	}
 }
 
